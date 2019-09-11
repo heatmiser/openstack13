@@ -18,9 +18,9 @@ Hard Drive: 2 x 500Gb SSD
 
 Several choices of operating system for the primary hypervisor to host this Red Hat OpenStack lab deployment are available:
 
-Red Hat Enterprise Linux 7.x
-CentOS 7.x
-Fedora 29/30
+- Red Hat Enterprise Linux 7.x
+- CentOS 7.x
+- Fedora 29/30
 
 For convenience, a sample kickstart for a Red Hat Enterprise Linux 7.x hypervisor installation is provided in this repo, `rhel7-hypervisor-ks.cfg`. Edit `rhel7-hypervisor-ks.cfg` for your environment and use it to install the base hypervisor system. In the "Register Red Hat Subscription post script section of `rhel7-hypervisor-ks.cfg`, either use your Red Hat account username/password OR subscription org ID and subscription activation key ([more precise selection of a specific subscription](https://access.redhat.com/articles/1378093)) and make sure the credentials combination you are NOT USING is commented out. 
 
@@ -34,7 +34,7 @@ yum -y install wget curl ansible git
 
 ...as well as making the following configuration additions:
 
-# Enabling nested KVM will provide accelerated nested virtualization:
+## Enabling nested KVM will provide accelerated nested virtualization:
 ```
 cat << EOF > /etc/modprobe.d/kvm_intel.conf
 options kvm-intel nested=1
@@ -44,7 +44,7 @@ options kvm-intel ept=1
 EOF
 ```
 
-# Disable the rp_filter to allow virtual machines to communicate:
+## Disable the rp_filter to allow virtual machines to communicate:
 ```
 cat << EOF > /etc/sysctl.d/98-rp-filter.conf
 net.ipv4.conf.default.rp_filter = 0
@@ -52,7 +52,7 @@ net.ipv4.conf.all.rp_filter = 0
 EOF
 ```
 
-# Enable ip_forwarding:
+## Enable ip_forwarding:
 ```
 cat << EOF > /etc/sysctl.d/90-ip_forward-filter.conf
 net.ipv4.ip_forward=1
@@ -102,7 +102,7 @@ osp-hypervisor ~]# ausearch -c 'ovs-vswitchd' --raw | audit2allow -M my-ovsvswit
 osp-hypervisor ~]# semodule -X 300 -i my-ovsvswitchd.pp
 ```
 
-- ...followed by restarting the service as outlined previously.
+- ...followed by restarting the openvswitch service as outlined previously.
 
 Let's create two (2) Open vSwitch (ovs) networks `ovsbr-int` and `ovsbr-ctlplane`.
 
@@ -349,16 +349,15 @@ We will use the ISC DHCP (Dynamic Host Configuration Protocol) server to provide
 
 ```
 export storagepool="default"
-sudo virt-install --name="rhel7-util" \
+sudo virt-install --name="osp-util" \
   --cpu=host --vcpus=1 --ram=1024 \
   --controller type=scsi,model=virtio-scsi \
   --disk pool=${storagepool},bus=scsi,discard='unmap',format=qcow2,size=30 \
-  --network bridge=ovsbr-int,model=virtio,virtualport_type=openvswitch,mac=52:54:00:5c:23:43 \
+  --network bridge=ovsbr-int,model=virtio,virtualport_type=openvswitch \
   --location /u01/libvirt/ISO/rhel-server-7.7-x86_64-dvd.iso \
   --os-variant rhel7.0 --initrd-inject rhel7-util-ks.cfg \
   --extra-args "inst.ks=file:/rhel7-util-ks.cfg console=tty0 console=ttyS0,115200" \
-  --boot menu=on --nographics --noreboot --serial pty --print-xml > rhel7-util.xml
-sudo virsh define --file rhel7-util.xml      
+  --boot menu=on --nographics --noreboot --serial pty
 ```
 
 ```
