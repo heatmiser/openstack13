@@ -1,8 +1,9 @@
-## Red Hat OpenStack Platform 11
+## NOTE THAT THE FOLLOWING DOCUMENTATION IS CURRENTLY A WORK IN PROGRESS AND IS NOT READY FOR USAGE AT THE MOMENT
+## Red Hat OpenStack Platform 13
 
-This document describes how to install Red Hat OpenStack Platform 11 on a single physical host with KVM.
+This document describes how to install Red Hat OpenStack Platform 13 on a single physical host with KVM.
 
-``Note``: Only for testing and not recommanded for production environment.
+``Note``: Only for dev/test and not recommended for production environment.
 
 The configuration of the physical host (Hypervisor):
 ```
@@ -10,54 +11,32 @@ Model: DELL® PowerEdge R720
 Processor: 2x Intel® Xeon® E5 2620 v2
 Architecture: 12 cores 24 threads 2x @2,1 Ghz cache L3 15MB, x64, VT
 RAM: 128 Go DDR3 ECC
-Hard Drive: 2 x 500Go SSD
+Hard Drive: 2 x 500Gb SSD
 ```
 
-## SSH keys
+## Primary hypervisor installation
 
-Create the ssh key for root user:
+Several choices of operating system for the primary hypervisor to host this Red Hat OpenStack lab deployment are available:
 
-```
-host ~]# ssh-keygen -b 2048 -t rsa -f ~/.ssh/id_rsa -q -N ""
-```
+Red Hat Enterprise Linux 7.x
+CentOS 7.x
+Fedora 29/30
 
-The public key will be injected in the cloud image and help to have a access without password.
+For convenience, a sample kickstart for a Red Hat Enterprise Linux 7.x hypervisor installation is provided in this repo, `rhel7-hypervisor-ks.cfg`. Edit `rhel7-hypervisor-ks.cfg` for your environment and use it to install the base hypervisor system. In the "Register Red Hat Subscription post script section of `rhel7-hypervisor-ks.cfg`, either use your Red Hat account username/password OR subscription org ID and subscription activation key ([more precise selection of a specific subscription](https://access.redhat.com/articles/1378093)) and make sure the credentials combination you are NOT USING is commented out. 
 
+Adjusting this kickstart to install a CentOS 7.x or Fedora 29/30 base hypervisor system is left as an exercise for the reader.
 
-## DOMAIN NAME
-
-It's recommanded to have a proper DNS server for foward and reverse name resolutions.
-We will cover later or in another post how to integrate a DNS service with Identity Manager (IDM) or FreeIPA.
-Let's add entries to /etc/hosts to represent it for future ease of access:
+If you already have installed the base hypervisor system, ensure that the following packages are installed...
 
 ```
-host ~]# cat << EOF >> /etc/hosts
-10.10.0.20   osp-undercloud.local.dc osp-undercloud
-EOF
+yum -y install wget curl ansible git
 ```
 
-## Libvirt (KVM) installation
+...as well as making the following configuration additions:
 
-- Installation of libvirt KVM is quite straigth forward action:
-
+# Enabling nested KVM will provide accelerated nested virtualization:
 ```
-host ~]# yum install -y yum install libvirt qemu-kvm virt-manager virt-install libguestfs-tools  
-```
-
-- Start and enable libvirt:
-
-```
-host ~]# systemctl enable libvirtd
-host ~]# systemctl start libvirtd
-```
-
-
-## Nested virtualization
-
-- Enabling nested KVM will help to have accelerated nested virtualisation:
-
-```
-host ~]# cat << EOF > /etc/modprobe.d/kvm_intel.conf
+cat << EOF > /etc/modprobe.d/kvm_intel.conf
 options kvm-intel nested=1
 options kvm-intel enable_shadow_vmcs=1
 options kvm-intel enable_apicv=1
@@ -65,64 +44,78 @@ options kvm-intel ept=1
 EOF
 ```
 
-- Disable the rp_filter to allow our virtual machines to communicate:
-
+# Disable the rp_filter to allow virtual machines to communicate:
 ```
-host ~]# cat << EOF > /etc/sysctl.d/98-rp-filter.conf
+cat << EOF > /etc/sysctl.d/98-rp-filter.conf
 net.ipv4.conf.default.rp_filter = 0
 net.ipv4.conf.all.rp_filter = 0
 EOF
 ```
 
-- Enable ip_forwarding:
-
+# Enable ip_forwarding:
 ```
-host ~]# cat << EOF > /etc/sysctl.d/90-ip_forward-filter.conf
+cat << EOF > /etc/sysctl.d/90-ip_forward-filter.conf
 net.ipv4.ip_forward=1
 net.ipv6.conf.default.forwarding=1
 net.ipv6.conf.all.forwarding=1
 EOF
 ```
 
-- Reboot the system to activate all settings:
+## Open vSwitch for bridges
+
+We will utilize Open vSwitch for network bridges instead of traditional linux bridges.
+
+Open vSwitch packages are available in the base repositories for Fedora 29/30.
 ```
-host ~]# reboot
-```
-
-## OpenvSwitch for bridges
-
-I will use OpenvSwitch for network bridges instead of linux traditional bridges.
-
-- Installation of openvswtich:
-
-```
-host ~]# yum install openvswitch 
+osp-hypervisor ~]# yum -y install openvswitch 
 ```
 
-- Enable OpenvSwitch:
+For CentOS 7.x and RHEL 7.x, two choices exist:
+- build Open vSwitch RPM package from source: http://docs.openvswitch.org/en/latest/intro/install/fedora/
+- enable upstream OpenStack RDO repository to provide pre-built Open vSwitch packages: https://repos.fedorapeople.org/repos/openstack/ 
+
+- Once installed, enable Open vSwitch:
 
 ```
-host ~]# systemctl enable openvswitch 
+osp-hypervisor ~]# systemctl enable openvswitch 
 ```
 
-- Start OpenvSwitch:
+- ...and then start Open vSwitch service:
 
 ```
-host ~]# systemctl start openvswitch 
+osp-hypervisor ~]# systemctl start openvswitch 
 ```
 
-Let's create two (02) OpenvSwtich (ovs) networks `ovsbr-int` and `ovsbr-ctlplane`.
+- Verify that Open vSwitch did not have any issues with SELinux:
+```
+grep "openvswitch_t" /var/log/audit/audit.log
+```
+
+- If avc denied message is found, stop the openswitch service:
+```
+osp-hypervisor ~]# systemctl stop openvswitch 
+```
+
+- ...and either install any openvswitch-selinux packages that are available for the OS in question, or generate a local policy module to allow access:
+```
+osp-hypervisor ~]# ausearch -c 'ovs-vswitchd' --raw | audit2allow -M my-ovsvswitchd
+osp-hypervisor ~]# semodule -X 300 -i my-ovsvswitchd.pp
+```
+
+- ...followed by restarting the service as outlined previously.
+
+Let's create two (2) Open vSwitch (ovs) networks `ovsbr-int` and `ovsbr-ctlplane`.
 
 1. ovsbr-int is the provisioning network `(10.10.0.0/24)`
 
-2. ovsbr-ctlplane is the undercloud pxe network `(192.168.24.0/24)`
+2. ovsbr-ctlplane is the undercloud pxe network `(172.16.0.0/24)`
 
 ### OVS network configuration files:
 
 - ovsbr-int:
 
 ```
-host ~]# cat << EOF > /etc/sysconfig/network-scripts/ifcfg-ovsbr-int
+osp-hypervisor ~]# cat << EOF > /etc/sysconfig/network-scripts/ifcfg-ovsbr-int
 # -- Interface ovs bridge ovsbr-int
 DEVICE=ovsbr-int
 ONBOOT=yes
@@ -141,14 +134,14 @@ EOF
 - ovsbr-ctlplane:
 
 ```
-host ~]# cat << EOF > /etc/sysconfig/network-scripts/ifcfg-ovsbr-ctlplane
+osp-hypervisor ~]# cat << EOF > /etc/sysconfig/network-scripts/ifcfg-ovsbr-ctlplane
 # -- Interface ovs bridge ovsbr-ctlplane
 DEVICE=ovsbr-ctlplane
 ONBOOT=yes
 DEVICETYPE=ovs
 TYPE=OVSBridge
 BOOTPROTO=static
-IPADDR=192.168.24.254
+IPADDR=172.16.0.254
 NETMASK=255.255.255.0
 HOTPLUG=no
 NM_CONTROLLED=no
@@ -159,12 +152,12 @@ EOF
 
 - Restart network configuration:
 ```
-host ~]# systemctl restart network
+osp-hypervisor ~]# systemctl restart network
 ```
 
 Check ovs bridge status:
 ```
-host ~]# ovs-vsctl show
+osp-hypervisor ~]# ovs-vsctl show
 b51c43b9-7221-404c-b353-d6edc2dc7a41
     Bridge ovsbr-ctlplane
         Port ovsbr-ctlplane
@@ -179,7 +172,7 @@ b51c43b9-7221-404c-b353-d6edc2dc7a41
 `Note:`
 To configure the external ethernet device as ovs bridge (see my previous post)
 
-## Libvirt openvswitch networks
+## Libvirt Open vSwitch networks
 
 Create Libvirt networks accordingly to the ovs networks created.
 
@@ -188,7 +181,7 @@ Create Libvirt networks accordingly to the ovs networks created.
 - ovsbr-int:
 
 ```
-host ~]# cat << EOF > /tmp/ovsnet-int.xml
+osp-hypervisor ~]# cat << EOF > /tmp/ovsnet-int.xml
 <network>
   <name>ovsnet-int</name>
   <forward mode='bridge'/>
@@ -201,7 +194,7 @@ EOF
 - ovsbr-ctlplane:
 
 ```
-host ~]# cat << EOF > /tmp/ovsnet-ctlplane.xml
+osp-hypervisor ~]# cat << EOF > /tmp/ovsnet-ctlplane.xml
 <network>
   <name>ovsnet-ctlplane</name>
   <forward mode='bridge'/>
@@ -214,58 +207,63 @@ EOF
 2.  Register ovs networks:
 
 ```
-host ~]# virsh net-define /tmp/ovsnet-int.xml
-host ~]# virsh net-define /tmp/ovsnet-ctlplane.xml
+osp-hypervisor ~]# virsh net-define /tmp/ovsnet-int.xml
+osp-hypervisor ~]# virsh net-define /tmp/ovsnet-ctlplane.xml
 ```
 
 3. Activate ovs networks:
 
 ```
-host ~]# virsh net-start ovsnet-int
-host ~]# virsh net-start ovsnet-ctlplane
+osp-hypervisor ~]# virsh net-start ovsnet-int
+osp-hypervisor ~]# virsh net-start ovsnet-ctlplane
 ```
 
 4. Autostart ovs networks:
 
 ```
-host ~]# virsh net-autostart ovsnet-int
-host ~]# virsh net-autostart ovsnet-ctlplane
+osp-hypervisor ~]# virsh net-autostart ovsnet-int
+osp-hypervisor ~]# virsh net-autostart ovsnet-ctlplane
 ```
 
 5. Check ovs network:
 
 ```
-host ~]# virsh net-list
+osp-hypervisor ~]# virsh net-list
 ```
 
 ## Firewalld
 
-Enable firewall rule to permit the ovs bridges inter routing and NAT to the external world via `eth0`.
+Enable firewall rules to permit the ovs bridges inter routing and NAT to the external world via `eth0`.
 
-We assume the external network device on the hypervisor is `eth0`:
+We assume the external network device on the hypervisor is `eth0`. In order to determine which network device name to use execute:
 
-```
-host ~]# firewall-cmd --permanent --direct --add-rule ipv4 nat POSTROUTING 0 -o eth0 -j MASQUERADE
+`cat /proc/net/dev | awk '{print $1, $2, $3}'`
 
-host ~]# firewall-cmd --permanent --direct --add-rule ipv4 filter FORWARD 0 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-
-host ~]# firewall-cmd --permanent --direct --add-rule ipv4 filter FORWARD 0 -i ovsbr-int -o eth0 -m conntrack --ctstate NEW -j ACCEPT
-
-host ~]# firewall-cmd --permanent --direct --add-rule ipv4 filter FORWARD 0 -i ovsbr-int -o ovsbr-ctlplane -m conntrack --ctstate NEW -j ACCEPT
-
-host ~]# firewall-cmd --permanent --direct --add-rule ipv4 filter FORWARD 0 -i ovsbr-ctlplane -o ovsbr-int -m conntrack --ctstate NEW -j ACCEPT
-```
-
-- Reload firewall rules:
+Most likely, the proper device name to use will show a significant amount of network traffic activity. Set the variable `extnic` to reflect the network device name found from the above introspection command.
 
 ```
-host ~]# firewall-cmd --reload
+extnic=eth0
+osp-hypervisor ~]# firewall-cmd --permanent --direct --add-rule ipv4 nat POSTROUTING 0 -o $extnic -j MASQUERADE
+
+osp-hypervisor ~]# firewall-cmd --permanent --direct --add-rule ipv4 filter FORWARD 0 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+osp-hypervisor ~]# firewall-cmd --permanent --direct --add-rule ipv4 filter FORWARD 0 -i ovsbr-int -o $extnic -m conntrack --ctstate NEW -j ACCEPT
+
+osp-hypervisor ~]# firewall-cmd --permanent --direct --add-rule ipv4 filter FORWARD 0 -i ovsbr-int -o ovsbr-ctlplane -m conntrack --ctstate NEW -j ACCEPT
+
+osp-hypervisor ~]# firewall-cmd --permanent --direct --add-rule ipv4 filter FORWARD 0 -i ovsbr-ctlplane -o ovsbr-int -m conntrack --ctstate NEW -j ACCEPT
+```
+
+- Reload firewalld rules:
+
+```
+osp-hypervisor ~]# firewall-cmd --reload
 ```
 
 - Check firewalld rules:
 
 ```
-host ~]# firewall-cmd --direct --get-all-rules
+osp-hypervisor ~]# firewall-cmd --direct --get-all-rules
 ```
 
 ## ISC DHCP (Dynamic Host Configuration Protocol)
@@ -277,13 +275,13 @@ We will use the ISC DHCP (Dynamic Host Configuration Protocol) server to provide
 - Install ISC DHCP:
 
 ```
-host ~]# yum install -y dhcp
+osp-hypervisor ~]# yum install -y dhcp
 ```
 
 - Configure /etc/dhcp/dhcpd.conf:
 
 ```
-host ~]# cat << EOF > /etc/dhcp/dhcpd.conf
+osp-hypervisor ~]# cat << EOF > /etc/dhcp/dhcpd.conf
 # Default domain
 option domain-name "local.dc";
 # name servers
@@ -301,7 +299,7 @@ subnet 192.168.122.0 netmask 255.255.255.0 {
 }
 
 # -- ovsbr-ctlplane
-subnet 192.168.24.0 netmask 255.255.255.0 {
+subnet 172.16.0.0 netmask 255.255.255.0 {
 }
 
 # -- ovsbr-int
@@ -322,14 +320,54 @@ EOF
 - Enable dhcp service:
 
 ```
-host ~]# systemctl enable dhcpd.service
+osp-hypervisor ~]# systemctl enable dhcpd.service
 ```
 
 - Start dhcp service:
 
 ```
-host ~]# systemctl start dhcpd.service
+osp-hypervisor ~]# systemctl start dhcpd.service
 ```
+
+## SSH keys
+
+Create the ssh key for root user:
+
+```
+osp-hypervisor ~]# ssh-keygen -t ecdsa -b 521 -f ~/.ssh/osp_id_ecdsa -q -N ""
+```
+
+The public key will be injected in VM images and provide access without password.
+
+
+## ISC DHCP (Dynamic Host Configuration Protocol) and Domain Name System (DNS)
+
+We will use the ISC DHCP (Dynamic Host Configuration Protocol) server to provide necessary IP leases for on the ovs ovsbr-int network.  Additionally, install and configure a proper DNS server for forward and reverse name resolution.
+
+> **NOTE** If you want to utilize a storage pool other than the `default` pool, change the `storagepool` variable name to reflect the specific storage pool desired 
+> **NOTE** Change the path to the RHEL 7.x ISO for your environment
+
+```
+export storagepool="default"
+sudo virt-install --name="rhel7-util" \
+  --cpu=host --vcpus=1 --ram=1024 \
+  --controller type=scsi,model=virtio-scsi \
+  --disk pool=${storagepool},bus=scsi,discard='unmap',format=qcow2,size=30 \
+  --network bridge=ovsbr-int,model=virtio,virtualport_type=openvswitch,mac=52:54:00:5c:23:43 \
+  --location /u01/libvirt/ISO/rhel-server-7.7-x86_64-dvd.iso \
+  --os-variant rhel7.0 --initrd-inject rhel7-util-ks.cfg \
+  --extra-args "inst.ks=file:/rhel7-util-ks.cfg console=tty0 console=ttyS0,115200" \
+  --boot menu=on --nographics --noreboot --serial pty --print-xml > rhel7-util.xml
+sudo virsh define --file rhel7-util.xml      
+```
+
+```
+osp-hypervisor ~]# cat << EOF >> /etc/hosts
+10.10.0.20   osp-undercloud.local.dc osp-undercloud
+EOF
+```
+
+
 
 ## IPMI access
 
@@ -338,14 +376,14 @@ Create access on the Hypervisor so undercloud (ironic) can control virtual machi
 - Create user account stack:
 
 ```
-host ~]# useradd stack
-host ~]# echo "RedHatOSP11" | passwd stack --stdin
+osp-hypervisor ~]# useradd stack
+osp-hypervisor ~]# echo "RedHatOSP13" | passwd stack --stdin
 ```
 
 - Grant manage privileges to user stack:
 
 ```
-host ~]# cat << EOF > /etc/polkit-1/localauthority/50-local.d/50-libvirt-user-stack.pkla
+osp-hypervisor ~]# cat << EOF > /etc/polkit-1/localauthority/50-local.d/50-libvirt-user-stack.pkla
 [libvirt Management Access]
 Identity=unix-user:stack
 Action=org.libvirt.unix.manage
@@ -359,18 +397,7 @@ EOF
 
 ### Download the image
 
-Download Red Hat guest image `rhel-guest-image-7.3-36.x86_64.qcow2`  from Red Hat download page and save it in `/var/lib/libvirt/images/`.
-
-```
-host ~]# qemu-img info /var/lib/libvirt/images/rhel-guest-image-7.3-36.x86_64.qcow2
-image: /var/lib/libvirt/images/rhel-guest-image-7.3-36.x86_64.qcow2
-file format: qcow2
-virtual size: 10G (10737418240 bytes)
-disk size: 547M
-cluster_size: 65536
-Format specific information:
-    compat: 0.10
-```
+Download Red Hat Enterprise Linux ISO `rhel-server-7.7-x86_64-dvd.iso`  from Red Hat download page and save it in `/var/lib/libvirt/ISO/`.
 
 ### Resize the cloud image
 
@@ -379,12 +406,12 @@ You need to install a set of tools to interact with the cloud image:
 - Install tools:
 
 ```
-host ~]# yum install -y libguestfs-tools libguestfs-xfs qemu-img
+osp-hypervisor ~]# yum install -y libguestfs-tools libguestfs-xfs qemu-img
 ```
 
 - Check Red Hat kvm cloud image actual size:
 ```
-host ~]# virt-filesystems --long -h --all -a /var/lib/libvirt/images/rhel-guest-image-7.3-36.x86_64.qcow2
+osp-hypervisor ~]# virt-filesystems --long -h --all -a /var/lib/libvirt/images/rhel-guest-image-7.3-36.x86_64.qcow2
 
 Name       Type        VFS  Label  MBR  Size  Parent
 /dev/sda1  filesystem  xfs  -      -    7.8G  -
@@ -395,12 +422,12 @@ Name       Type        VFS  Label  MBR  Size  Parent
 
 - Resize the kvm cloud image to `60GB`:
 ```
-host ~]# qemu-img resize /var/lib/libvirt/images/rhel-guest-image-7.3-36.x86_64.qcow2 60G
+osp-hypervisor ~]# qemu-img resize /var/lib/libvirt/images/rhel-guest-image-7.3-36.x86_64.qcow2 60G
 ```
 
 - Confirm Red Hat kvm cloud image size after resizing:
 ```
-host ~]# virt-filesystems --long -h --all -a /var/lib/libvirt/images/rhel-guest-image-7.3-36.x86_64.qcow2
+osp-hypervisor ~]# virt-filesystems --long -h --all -a /var/lib/libvirt/images/rhel-guest-image-7.3-36.x86_64.qcow2
 
 Name       Type        VFS  Label  MBR  Size  Parent
 /dev/sda1  filesystem  xfs  -      -    60G   -
@@ -417,9 +444,9 @@ Name       Type        VFS  Label  MBR  Size  Parent
 - Create Undercloud image:
 
 ```
-host ~]# cd /var/lib/libvirt/images/
+osp-hypervisor ~]# cd /var/lib/libvirt/images/
 
-host ~]# qemu-img create -f qcow2 -b rhel-guest-image-7.3-36.x86_64.qcow2 osp-undercloud.qcow2
+osp-hypervisor ~]# qemu-img create -f qcow2 -b rhel-guest-image-7.3-36.x86_64.qcow2 osp-undercloud.qcow2
 ```
 
 ### Customize undercloud image
@@ -427,49 +454,49 @@ host ~]# qemu-img create -f qcow2 -b rhel-guest-image-7.3-36.x86_64.qcow2 osp-un
 - By default the guest image comes with a random root password. Let's set the root password to something we know **RedHat4ever**: 
 
 ```
-host ~]# virt-customize -a osp-undercloud.qcow2 --root-password password:RedHat4ever
+osp-hypervisor ~]# virt-customize -a osp-undercloud.qcow2 --root-password password:RedHat4ever
 ```
 
 - Inject root user public key (id_rsa.pub): 
 
 ```
-host ~]# virt-customize -a osp-undercloud.qcow2 --ssh-inject root
+osp-hypervisor ~]# virt-customize -a osp-undercloud.qcow2 --ssh-inject root
 ```
 
 - Define the hostname: 
 
 ```
-host ~]# virt-customize -a osp-undercloud.qcow2 --hostname osp-undercloud.local.dc
+osp-hypervisor ~]# virt-customize -a osp-undercloud.qcow2 --hostname osp-undercloud.local.dc
 ```
 
 - Remove cloud-init to avoid unnecessary lookup during booting process:
 
 ```
-host ~]# virt-customize -a osp-undercloud.qcow2 --uninstall cloud-init
+osp-hypervisor ~]# virt-customize -a osp-undercloud.qcow2 --uninstall cloud-init
 ```
 
 - Update the cloud image packages:
 
 ```
-host ~]# virt-customize -a osp-undercloud.qcow2 --update
+osp-hypervisor ~]# virt-customize -a osp-undercloud.qcow2 --update
 ```
 
 - Create network configuration files (eth0 & eth1) for `ovsbr-ctlplane` and `ovsbr-int`:
 
 ```
-host ~]# virt-customize -a osp-undercloud.qcow2 --run-command 'cp /etc/sysconfig/network-scripts/ifcfg-eth{0,1} && sed -i s/DEVICE=.*/DEVICE=eth1/g /etc/sysconfig/network-scripts/ifcfg-eth1'
+osp-hypervisor ~]# virt-customize -a osp-undercloud.qcow2 --run-command 'cp /etc/sysconfig/network-scripts/ifcfg-eth{0,1} && sed -i s/DEVICE=.*/DEVICE=eth1/g /etc/sysconfig/network-scripts/ifcfg-eth1'
 ```
 
 - Disable the automatic boot on eth0 (ovsbr-ctlplane):
 
 ```
-host ~]# virt-customize -a osp-undercloud.qcow2 --run-command 'sed -i s/ONBOOT=.*/ONBOOT=no/g /etc/sysconfig/network-scripts/ifcfg-eth0'
+osp-hypervisor ~]# virt-customize -a osp-undercloud.qcow2 --run-command 'sed -i s/ONBOOT=.*/ONBOOT=no/g /etc/sysconfig/network-scripts/ifcfg-eth0'
 ```
 
 - Enable the automatic on eth1 (ovsbr-int):
 
 ```
-host ~]# virt-customize -a osp-undercloud.qcow2 --run-command 'sed -i s/ONBOOT=.*/ONBOOT=yes/g /etc/sysconfig/network-scripts/ifcfg-eth1'
+osp-hypervisor ~]# virt-customize -a osp-undercloud.qcow2 --run-command 'sed -i s/ONBOOT=.*/ONBOOT=yes/g /etc/sysconfig/network-scripts/ifcfg-eth1'
 ```
 
 ### Install undercloud image
@@ -477,14 +504,29 @@ host ~]# virt-customize -a osp-undercloud.qcow2 --run-command 'sed -i s/ONBOOT=.
 - Create virtual machine for the undercloud image with our two networks (ovsbr-int and ovsbr-ctlplane): 
 
 ```
-host ~]# virt-install --import --name osp-undercloud --ram 16384 --vcpus 4 --disk /var/lib/libvirt/images/osp-undercloud.qcow2,format=qcow2,bus=virtio  --network bridge=ovsbr-ctlplane,model=virtio,virtualport_type=openvswitch  --network bridge=ovsbr-int,model=virtio,virtualport_type=openvswitch,mac=52:54:00:5c:23:43  --os-type=linux --os-variant=rhel7.3 --graphics none --autostart --noautoconsole
+osp-hypervisor ~]# virt-install --import --name osp-undercloud --ram 16384 --vcpus 4 --disk /var/lib/libvirt/images/osp-undercloud.qcow2,format=qcow2,bus=virtio  --network bridge=ovsbr-ctlplane,model=virtio,virtualport_type=openvswitch  --network bridge=ovsbr-int,model=virtio,virtualport_type=openvswitch,mac=52:54:00:5c:23:43  --os-type=linux --os-variant=rhel7.3 --graphics none --autostart --noautoconsole
 
 
 Starting install...
 Creating domain... 
 ```
 
-This step will create the `osp-undercloud` domain with 16GB of memory, 4 cpu with two nic connected respectively to ovsbr-ctlplane and ovsbr-int.
+> **NOTE** Change the path to the ISO for your environment
+
+```
+export storagepool="default"
+virt-install --name="osp-undercloud" \
+--cpu=host --vcpus=4 --ram=8192 \
+--controller type=scsi,model=virtio-scsi \
+--disk pool=${storagepool},bus=scsi,discard='unmap',format=qcow2,size=120 \
+--network bridge=ovsbr-int,model=virtio,virtualport_type=openvswitch,mac=52:54:00:5c:23:43 \
+--os-variant rhel7.0 --boot menu=on \
+--location /var/lib/libvirt/ISO/rhel-server-7.7-x86_64-dvd.iso \
+--initrd-inject rhel7-util-ks.cfg --extra-args "inst.ks=file:/rhel7-helper-ks.cfg" --noautoconsole
+```
+
+
+This step will create the `osp-undercloud` VM with 8GB of memory, 4 cpu with two nic connected respectively to the ovsbr-ctlplane and ovsbr-int.
 
 `Note`:
 Adding the mac address (52:54:00:5c:23:43) in the setup command will create the nic device with the specified hardware address. The connected nic interface will grab the ip address filled in the dhcp config file (10.10.0.20).
@@ -492,27 +534,27 @@ Adding the mac address (52:54:00:5c:23:43) in the setup command will create the 
 Verify connectivity to this machine, with it not requiring a password:
 
 ```
-host ~]#  ssh root@osp-undercloud
+osp-hypervisor ~]#  ssh root@osp-undercloud
 osp-undercloud]# exit
-host ~]#
+osp-hypervisor ~]#
 ```
 
 `Note:`
 If for a reason you did not inject the root public key during the undercloud cloud image customization, you can still copy the root key with ssh-copy-id:
 
 ```
-host ~]#  ssh-copy-id -i ~/.ssh/id_rsa.pub root@osp-undercloud
+osp-hypervisor ~]#  ssh-copy-id -i ~/.ssh/id_rsa.pub root@osp-undercloud
 ```
 
 ### Snapshot the Undercloud VM
 
-Lets create a snapshot of our undercloud virtual machine in the case we run into any problems; this will allow us to revert back to a working state without having to build up our environment from scratch:
+Lets create a snapshot of our undercloud virtual machine in case we run into any issues; this will allow us to revert back to a working state without having to rebuild our environment from scratch:
 
 ```
-host ~]#  virsh snapshot-create-as osp-undercloud osp-undercloud-snap1
+osp-hypervisor ~]#  virsh snapshot-create-as osp-undercloud osp-undercloud-snap1
 Domain snapshot osp-undercloud-snap1 created
 
-host ~]# virsh snapshot-list osp-undercloud
+osp-hypervisor ~]# virsh snapshot-list osp-undercloud
  Name                 Creation Time             State
 ------------------------------------------------------------
  osp-undercloud-snap1 2017-07-27 10:25:24 +0200 running
@@ -521,32 +563,39 @@ host ~]# virsh snapshot-list osp-undercloud
 If you ever need to restore the undercloud to the current state, you can execute the following command:
 
 ```
-host ~]# virsh snapshot-revert --domain osp-undercloud <snapshot-name>
+osp-hypervisor ~]# virsh snapshot-revert --domain osp-undercloud <snapshot-name>
 ```
 
 ## Create nodes for the overcloud
-We will provision five (05) nodes for the overcloud setup: 
-- 3 x controller nodes (for HA)
+We will provision four (4) nodes for the overcloud setup: 
+- 1 x controller node
 - 2 x compute nodes
+- 1 x networker node
 
-- Create 60GB thin-provisioned disks for the five guests:
 
-```
-host ~]# cd /var/lib/libvirt/images/
-host ~]# for i in {1..5}; do qemu-img create -f qcow2 \
-    -o preallocation=metadata osp-overcloud-node$i.qcow2 60G; done
-```
 
 Let's now create libvirt definitions for our overcloud virtual machines, ensuring the following characteristics:
 
-- 4 vCPU's
-- 8GB memory
-- 60GB disk (we just formatted)
-- 1 x nic ovsbr-ctlplane
-- 1 x nic ovsbr-int
+<center>
+
+| Node Type  | Quantity | CPU's | Memory | Storage | Networks  |
+|:-:|:-:|:-:|:-:|:-:|:-:|
+| **Controller** | 1 | 4  | 12GB | 1x60GB | 1x Default/Trunk, 1x Provisioning  |
+| **Compute** | 2 | 4  | 6GB | 1x50GB | 1x Default/Trunk, 1x Provisioning  |
+| **Networker** | 1 | 2  | 4GB | 1x50GB | 1x Default/Trunk, 1x Provisioning  |
+
+</center>
+
+- Create thin-provisioned disks for the four VMs:
 
 ```
-host ~]# for i in {1..5}; do \
+osp-hypervisor ~]# cd /var/lib/libvirt/images/
+osp-hypervisor ~]# for i in {1..5}; do qemu-img create -f qcow2 \
+    -o preallocation=metadata l2-cache-size=4M osp-overcloud-node$i.qcow2 60G; done
+```
+
+```
+osp-hypervisor ~]# for i in {1..5}; do \
     virt-install --ram 8192 --vcpus 4 --os-variant rhel7 \
     --disk path=/var/lib/libvirt/images/osp-overcloud-node$i.qcow2,device=disk,bus=virtio,format=qcow2 \
     --noautoconsole --vnc --network bridge=ovsbr-ctlplane,model=virtio,virtualport_type=openvswitch \
@@ -561,7 +610,7 @@ host ~]# for i in {1..5}; do \
 We should now have a number of additional virtual machines configured, but not started:
 
 ```
-host ~]# virsh list --all
+osp-hypervisor ~]# virsh list --all
  Id    Name                           State
 ----------------------------------------------------
  1     osp-undercloud                     running
@@ -572,14 +621,14 @@ host ~]# virsh list --all
  -     osp-overcloud-node5                shut off
 ```
 
-`NOTE:` Do NOT start these machines; we'll have OSP director manage the power status of these machines going forward.
+`NOTE:` Do NOT start these machines; we'll have RHOSP director manage the power status of these machines going forward.
 
 ## Undercloud installation
 
 - Connect to the `osp-undercloud` virtual machine:
 
 ```
-host ~]#  ssh root@osp-undercloud
+osp-hypervisor ~]#  ssh root@osp-undercloud
 ```
 
 - Set hostname:
@@ -700,17 +749,17 @@ osp-undercloud ~]# su - stack
 osp-undercloud ~]$ cat << EOF > ~/undercloud.conf
 [DEFAULT]
 undercloud_hostname = $(hostname -f)
-local_ip = 192.168.24.1/24
-network_gateway = 192.168.24.1
-undercloud_public_vip = 192.168.24.2
-undercloud_admin_vip = 192.168.24.3
+local_ip = 172.16.0.1/24
+network_gateway = 172.16.0.1
+undercloud_public_vip = 172.16.0.2
+undercloud_admin_vip = 172.16.0.3
 local_interface = eth0
-network_cidr = 192.168.24.0/24
-masquerade_network = 192.168.24.0/24
-dhcp_start = 192.168.24.5
-dhcp_end = 192.168.24.24
+network_cidr = 172.16.0.0/24
+masquerade_network = 172.16.0.0/24
+dhcp_start = 172.16.0.5
+dhcp_end = 172.16.0.24
 discovery_interface = br-ctlplane
-discovery_iprange = 192.168.24.100,192.168.24.120
+discovery_iprange = 172.16.0.100,172.16.0.120
 enabled_drivers = pxe_ipmitool,pxe_drac,pxe_ilo,pxe_ssh
 [auth]
 EOF
