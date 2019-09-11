@@ -268,7 +268,7 @@ osp-hypervisor ~]# firewall-cmd --direct --get-all-rules
 
 ## SSH keys
 
-Create the ssh key for root user:
+Create the ssh key for `root` user:
 
 ```
 osp-hypervisor ~]# ssh-keygen -t ecdsa -b 521 -f ~/.ssh/osp_id_ecdsa -q -N ""
@@ -285,7 +285,8 @@ We will use the ISC DHCP (Dynamic Host Configuration Protocol) server to provide
 
 Download Red Hat Enterprise Linux ISO `rhel-server-7.7-x86_64-dvd.iso`  from Red Hat download page and save it in `/var/lib/libvirt/ISO/`.
 
-> **NOTE** If you want to utilize a storage pool other than the `default` pool, change the `storagepool` variable name to reflect the specific storage pool desired 
+> **NOTE** If you want to utilize a storage pool other than the `default` pool, change the `storagepool` variable name to reflect the specific storage pool desired
+> 
 > **NOTE** Change the path to the RHEL 7.x ISO for your environment
 
 ```
@@ -295,16 +296,18 @@ sudo virt-install --name="osp-util" \
   --controller type=scsi,model=virtio-scsi \
   --disk pool=${storagepool},bus=scsi,discard='unmap',format=qcow2,size=30 \
   --network bridge=ovsbr-int,model=virtio,virtualport_type=openvswitch \
-  --location /var/lib/libvirt/ISO//rhel-server-7.7-x86_64-dvd.iso \
+  --location /var/lib/libvirt/ISO/rhel-server-7.7-x86_64-dvd.iso \
   --os-variant rhel7.0 --initrd-inject rhel7-util-ks.cfg \
   --extra-args "inst.ks=file:/rhel7-util-ks.cfg console=tty0 console=ttyS0,115200" \
   --boot menu=on --nographics --noreboot --serial pty
 ```
 
+Upon completion of installation the `osp-util` VM will shutdown.
+
 ### Customize osp-util image
 
-- By default the guest image comes with a simple root password. Let's set the root password to something a little stronger **RedHat4ever**: 
-Also, make sure to include the correct path to the osp-util VM disk image file
+- By default the guest image comes with a simple root password. Let's set the root password to something a little stronger **RedHat4ever**
+**NOTE**Also, make sure to use the correct path to the osp-util VM disk image file:
 
 ```
 osp-hypervisor ~]# virt-customize -a osp-util.qcow2 --root-password password:RedHat4ever
@@ -325,14 +328,14 @@ EOF
 
 Create access on the Hypervisor so undercloud (ironic) can control virtual machines deployed on the KVM.
 
-- Create user account stack:
+- Create user account `stack`:
 
 ```
 osp-hypervisor ~]# useradd stack
 osp-hypervisor ~]# echo "RedHatOSP13" | passwd stack --stdin
 ```
 
-- Grant manage privileges to user stack:
+- Grant manage privileges to user `stack`:
 
 ```
 osp-hypervisor ~]# cat << EOF > /etc/polkit-1/localauthority/50-local.d/50-libvirt-user-stack.pkla
@@ -361,9 +364,9 @@ Install a set of tools to interact with the cloud image:
 osp-hypervisor ~]# yum install -y libguestfs-tools libguestfs-xfs qemu-img
 ```
 
-- Check Red Hat kvm cloud image actual size:
+- Check Red Hat kvm cloud image actual size (adjust path to file as required):
 ```
-osp-hypervisor ~]# virt-filesystems --long -h --all -a /var/lib/libvirt/images/rhel-guest-image-7.3-36.x86_64.qcow2
+osp-hypervisor ~]# virt-filesystems --long -h --all -a /var/lib/libvirt/images/rhel-server-7.7-x86_64-kvm.qcow2
 
 Name       Type        VFS  Label  MBR  Size  Parent
 /dev/sda1  filesystem  xfs  -      -    7.8G  -
@@ -374,12 +377,12 @@ Name       Type        VFS  Label  MBR  Size  Parent
 
 - Resize the kvm cloud image to `60GB`:
 ```
-osp-hypervisor ~]# qemu-img resize /var/lib/libvirt/images/rhel-guest-image-7.3-36.x86_64.qcow2 60G
+osp-hypervisor ~]# qemu-img resize /var/lib/libvirt/images/rhel-server-7.7-x86_64-kvm.qcow2 60G
 ```
 
 - Confirm Red Hat kvm cloud image size after resizing:
 ```
-osp-hypervisor ~]# virt-filesystems --long -h --all -a /var/lib/libvirt/images/rhel-guest-image-7.3-36.x86_64.qcow2
+osp-hypervisor ~]# virt-filesystems --long -h --all -a /var/lib/libvirt/images/rhel-server-7.7-x86_64-kvm.qcow2
 
 Name       Type        VFS  Label  MBR  Size  Parent
 /dev/sda1  filesystem  xfs  -      -    60G   -
@@ -398,7 +401,7 @@ Name       Type        VFS  Label  MBR  Size  Parent
 ```
 osp-hypervisor ~]# cd /var/lib/libvirt/images/
 
-osp-hypervisor ~]# qemu-img create -f qcow2 -b rhel-guest-image-7.3-36.x86_64.qcow2 osp-undercloud.qcow2
+osp-hypervisor ~]# qemu-img create -f qcow2 -b rhel-server-7.7-x86_64-kvm.qcow2 osp-undercloud.qcow2
 ```
 
 ### Customize undercloud image
@@ -533,8 +536,8 @@ Let's now create libvirt definitions for our overcloud virtual machines, ensurin
 | Node Type  | Quantity | CPU's | Memory | Storage | Networks  |
 |:-:|:-:|:-:|:-:|:-:|:-:|
 | **Controller** | 1 | 4  | 12GB | 1x60GB | 1x Default/Trunk, 1x Provisioning  |
-| **Compute** | 2 | 4  | 6GB | 1x50GB | 1x Default/Trunk, 1x Provisioning  |
-| **Networker** | 1 | 2  | 4GB | 1x50GB | 1x Default/Trunk, 1x Provisioning  |
+| **Compute** | 2 | 4  | 6GB | 1x60GB | 1x Default/Trunk, 1x Provisioning  |
+| **Networker** | 1 | 2  | 4GB | 1x60GB | 1x Default/Trunk, 1x Provisioning  |
 
 </center>
 
@@ -543,7 +546,7 @@ Let's now create libvirt definitions for our overcloud virtual machines, ensurin
 ```
 osp-hypervisor ~]# cd /var/lib/libvirt/images/
 osp-hypervisor ~]# for i in {1..5}; do qemu-img create -f qcow2 \
-    -o preallocation=metadata l2-cache-size=4M osp-overcloud-node$i.qcow2 60G; done
+    -o preallocation=metadata osp-overcloud-node$i.qcow2 60G; done
 ```
 
 ```
