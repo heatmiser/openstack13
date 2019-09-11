@@ -29,7 +29,7 @@ Adjusting this kickstart to install a CentOS 7.x or Fedora 29/30 base hypervisor
 If you already have installed the base hypervisor system, ensure that the following packages are installed...
 
 ```
-yum -y install wget curl ansible git
+yum -y install wget curl ansible git xmlstarlet
 ```
 
 ...as well as making the following configuration additions:
@@ -266,69 +266,6 @@ osp-hypervisor ~]# firewall-cmd --reload
 osp-hypervisor ~]# firewall-cmd --direct --get-all-rules
 ```
 
-## ISC DHCP (Dynamic Host Configuration Protocol)
-
-We will use the ISC DHCP (Dynamic Host Configuration Protocol) server to provide necessary IP leases for ovs ovsbr-int network.
-
-`Note`: ovsbr-ctlplane network will be manage by the undercloud PXE   
-
-- Install ISC DHCP:
-
-```
-osp-hypervisor ~]# yum install -y dhcp
-```
-
-- Configure /etc/dhcp/dhcpd.conf:
-
-```
-osp-hypervisor ~]# cat << EOF > /etc/dhcp/dhcpd.conf
-# Default domain
-option domain-name "local.dc";
-# name servers
-option domain-name-servers 8.8.8.8;
-
-default-lease-time 600;
-max-lease-time 7200;
-
-#ddns-update-style none;
-#authoritative;
-log-facility local7;
-
-# -- default-vibr0
-subnet 192.168.122.0 netmask 255.255.255.0 {
-}
-
-# -- ovsbr-ctlplane
-subnet 172.16.0.0 netmask 255.255.255.0 {
-}
-
-# -- ovsbr-int
-subnet 10.10.0.0 netmask 255.255.255.0 {
-  option routers 10.10.0.1;
-  range 10.10.0.50 10.10.0.100;
-}
-
-# -- fixed ip for osp-undercloud
-host osp-undercloud {
-  hardware ethernet 52:54:00:5c:23:43;
-  fixed-address 10.10.0.20;
-}
-
-EOF
-```
-
-- Enable dhcp service:
-
-```
-osp-hypervisor ~]# systemctl enable dhcpd.service
-```
-
-- Start dhcp service:
-
-```
-osp-hypervisor ~]# systemctl start dhcpd.service
-```
-
 ## SSH keys
 
 Create the ssh key for root user:
@@ -344,6 +281,10 @@ The public key will be injected in VM images and provide access without password
 
 We will use the ISC DHCP (Dynamic Host Configuration Protocol) server to provide necessary IP leases for on the ovs ovsbr-int network.  Additionally, install and configure a proper DNS server for forward and reverse name resolution.
 
+### Download the image
+
+Download Red Hat Enterprise Linux ISO `rhel-server-7.7-x86_64-dvd.iso`  from Red Hat download page and save it in `/var/lib/libvirt/ISO/`.
+
 > **NOTE** If you want to utilize a storage pool other than the `default` pool, change the `storagepool` variable name to reflect the specific storage pool desired 
 > **NOTE** Change the path to the RHEL 7.x ISO for your environment
 
@@ -354,20 +295,32 @@ sudo virt-install --name="osp-util" \
   --controller type=scsi,model=virtio-scsi \
   --disk pool=${storagepool},bus=scsi,discard='unmap',format=qcow2,size=30 \
   --network bridge=ovsbr-int,model=virtio,virtualport_type=openvswitch \
-  --location /u01/libvirt/ISO/rhel-server-7.7-x86_64-dvd.iso \
+  --location /var/lib/libvirt/ISO//rhel-server-7.7-x86_64-dvd.iso \
   --os-variant rhel7.0 --initrd-inject rhel7-util-ks.cfg \
   --extra-args "inst.ks=file:/rhel7-util-ks.cfg console=tty0 console=ttyS0,115200" \
   --boot menu=on --nographics --noreboot --serial pty
 ```
 
+### Customize osp-util image
+
+- By default the guest image comes with a simple root password. Let's set the root password to something a little stronger **RedHat4ever**: 
+Also, make sure to include the correct path to the osp-util VM disk image file
+
+```
+osp-hypervisor ~]# virt-customize -a osp-util.qcow2 --root-password password:RedHat4ever
+```
+
+- Inject root user public key (osp_id_ecdsa.pub): 
+
+```
+osp-hypervisor ~]# virt-customize -a osp-util.qcow2 --ssh-inject root:file:/root/.ssh/osp_id_ecdsa.pub --run-command 'restorecon -R /root/.ssh'
+```
+
 ```
 osp-hypervisor ~]# cat << EOF >> /etc/hosts
-10.10.0.20   osp-undercloud.local.dc osp-undercloud
+10.10.0.20   osp-util.local.dc osp-util
 EOF
 ```
-
-
-
 ## IPMI access
 
 Create access on the Hypervisor so undercloud (ironic) can control virtual machines deployed on the KVM.
@@ -396,11 +349,11 @@ EOF
 
 ### Download the image
 
-Download Red Hat Enterprise Linux ISO `rhel-server-7.7-x86_64-dvd.iso`  from Red Hat download page and save it in `/var/lib/libvirt/ISO/`.
+Download Red Hat Enterprise Linux KVM image  `rhel-server-7.7-x86_64-kvm.qcow2`  from Red Hat download page and save it in `/var/lib/libvirt/images/` (or your other KVM storage pool of choice).
 
 ### Resize the cloud image
 
-You need to install a set of tools to interact with the cloud image:
+Install a set of tools to interact with the cloud image:
 
 - Install tools:
 
