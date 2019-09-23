@@ -326,7 +326,7 @@ EOF
 ```
 ## IPMI access
 
-Create access on the Hypervisor so undercloud (ironic) can control virtual machines deployed on the KVM.
+Create account on the Hypervisor so undercloud (ironic) can control virtual machines deployed via KVM.
 
 - Create user account `stack`:
 
@@ -375,9 +375,12 @@ Name       Type        VFS  Label  MBR  Size  Parent
 [root@sd-73122 images]#
 ```
 
-- Resize the kvm cloud image to `60GB`:
+- Resize the kvm cloud image to `60GB`, move disk image to temp file name and then expand partition to fill:
 ```
 osp-hypervisor ~]# qemu-img resize /var/lib/libvirt/images/rhel-server-7.7-x86_64-kvm.qcow2 60G
+osp-hypervisor ~]# mv /var/lib/libvirt/images/rhel-server-7.7-x86_64-kvm.qcow2 /tmp/
+osp-hypervisor ~]# truncate -s 60G /var/lib/libvirt/images/rhel-server-7.7-x86_64-kvm.qcow2
+osp-hypervisor ~]# virt-resize --expand /dev/sda1  /tmp/rhel-server-7.7-x86_64-kvm.qcow2 /var/lib/libvirt/images/rhel-server-7.7-x86_64-kvm.qcow2
 ```
 
 - Confirm Red Hat kvm cloud image size after resizing:
@@ -415,7 +418,7 @@ osp-hypervisor ~]# virt-customize -a osp-undercloud.qcow2 --root-password passwo
 - Inject root user public key (id_rsa.pub): 
 
 ```
-osp-hypervisor ~]# virt-customize -a osp-undercloud.qcow2 --ssh-inject root
+osp-hypervisor ~]# virt-customize -a osp-undercloud.qcow2 --ssh-inject root:file:/root/.ssh/osp_id_ecdsa.pub --run-command 'restorecon -R /root/.ssh'
 ```
 
 - Define the hostname: 
@@ -433,6 +436,12 @@ osp-hypervisor ~]# virt-customize -a osp-undercloud.qcow2 --uninstall cloud-init
 - Update the cloud image packages:
 
 ```
+osp-hypervisor ~]# rhn_username_org="11939617"
+osp-hypervisor ~]# rhn_password_act_key="rhdevkey"
+osp-hypervisor ~]# virt-customize -a osp-undercloud.qcow2 --run-command "subscription-manager register --activationkey=$rhn_password_act_key --org=$rhn_username_org"
+osp-hypervisor ~]# virt-customize -a osp-undercloud.qcow2 --run-command 'subscription-manager repos --disable="*"'
+osp-hypervisor ~]# virt-customize -a osp-undercloud.qcow2 --run-command 'subscription-manager repos --enable="rhel-7-server-rpms"'
+osp-hypervisor ~]# virt-customize -a osp-undercloud.qcow2 --run-command 'subscription-manager repos --enable="rhel-7-server-extras-rpms"'
 osp-hypervisor ~]# virt-customize -a osp-undercloud.qcow2 --update
 ```
 
@@ -456,7 +465,17 @@ osp-hypervisor ~]# virt-customize -a osp-undercloud.qcow2 --run-command 'sed -i 
 
 ### Install undercloud image
 
-- Create virtual machine for the undercloud image with our two networks (ovsbr-int and ovsbr-ctlplane): 
+- Create virtual machine for the undercloud image with our two networks (ovsbr-int and ovsbr-ctlplane):
+
+```
+virt-install --import --name="osp-undercloud" \
+--cpu=host --vcpus=4 --ram=8192 \
+--controller type=scsi,model=virtio-scsi \
+--disk /var/lib/libvirt/images/osp-undercloud.qcow2,bus=scsi,discard='unmap',format=qcow2 \
+--network bridge=ovsbr-ctlplane,model=virtio,virtualport_type=openvswitch \
+--network bridge=ovsbr-int,model=virtio,virtualport_type=openvswitch,mac=52:54:00:5c:23:43 \
+--os-variant rhel7.0 --graphics none --autostart --noautoconsole
+```
 
 ```
 osp-hypervisor ~]# virt-install --import --name osp-undercloud --ram 16384 --vcpus 4 --disk /var/lib/libvirt/images/osp-undercloud.qcow2,format=qcow2,bus=virtio  --network bridge=ovsbr-ctlplane,model=virtio,virtualport_type=openvswitch  --network bridge=ovsbr-int,model=virtio,virtualport_type=openvswitch,mac=52:54:00:5c:23:43  --os-type=linux --os-variant=rhel7.3 --graphics none --autostart --noautoconsole
@@ -474,10 +493,11 @@ virt-install --name="osp-undercloud" \
 --cpu=host --vcpus=4 --ram=8192 \
 --controller type=scsi,model=virtio-scsi \
 --disk pool=${storagepool},bus=scsi,discard='unmap',format=qcow2,size=120 \
+--network bridge=ovsbr-ctlplane,model=virtio,virtualport_type=openvswitch
 --network bridge=ovsbr-int,model=virtio,virtualport_type=openvswitch,mac=52:54:00:5c:23:43 \
 --os-variant rhel7.0 --boot menu=on \
 --location /var/lib/libvirt/ISO/rhel-server-7.7-x86_64-dvd.iso \
---initrd-inject rhel7-util-ks.cfg --extra-args "inst.ks=file:/rhel7-helper-ks.cfg" --noautoconsole
+--initrd-inject rhel7-util-ks.cfg --extra-args "inst.ks=file:/rhel7-util-ks.cfg" --noautoconsole
 ```
 
 
@@ -705,18 +725,24 @@ osp-undercloud ~]$ cat << EOF > ~/undercloud.conf
 [DEFAULT]
 undercloud_hostname = $(hostname -f)
 local_ip = 172.16.0.1/24
-network_gateway = 172.16.0.1
-undercloud_public_vip = 172.16.0.2
-undercloud_admin_vip = 172.16.0.3
+undercloud_public_host = 172.16.0.2
+undercloud_admin_host = 172.16.0.3
+overcloud_domain_name = osp13.local.dc
+subnets = ctlplane-subnet
+local_subnet = ctlplane-subnet
 local_interface = eth0
-network_cidr = 172.16.0.0/24
-masquerade_network = 172.16.0.0/24
+inspection_interface = br-ctlplane
+enabled_drivers = ipmi,pxe_ipmitool
+
+[auth]
+
+[ctlplane-subnet]
+cidr = 172.16.0.0/24
 dhcp_start = 172.16.0.5
 dhcp_end = 172.16.0.24
-discovery_interface = br-ctlplane
-discovery_iprange = 172.16.0.100,172.16.0.120
-enabled_drivers = pxe_ipmitool,pxe_drac,pxe_ilo,pxe_ssh
-[auth]
+inspection_iprange = 172.16.0.100,172.16.0.120
+gateway = 172.16.0.1
+masquerade = true
 EOF
 ```
 
